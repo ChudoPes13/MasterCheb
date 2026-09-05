@@ -45,7 +45,7 @@ export function Chat({lang,t,online,voiceReady}:{lang:Lang;t:Copy;online:boolean
     if(data.rms>.012){heard=true;lastVoice=performance.now()}
     const samples:Float32Array=data.samples;for(let i=0;i<samples.length;i++)buffer.push(samples[i]);
     if(buffer.length>=3200){const pcm=new Int16Array(buffer.length);for(let i=0;i<buffer.length;i++)pcm[i]=Math.max(-32768,Math.min(32767,buffer[i]*32768));if(ws.current?.readyState===1)ws.current.send(pcm.buffer);buffer=[]}
-    if(heard&&performance.now()-lastVoice>1100)stopMic();
+    if(heard&&performance.now()-lastVoice>800)stopMic();
    };
    timer.current=window.setTimeout(()=>stopMic(),55000);
   }catch{stream.current?.getTracks().forEach(tr=>tr.stop());stream.current=null;void ctx.current?.close();ctx.current=null;setError(t.voiceError);setRecording(false);recordingRef.current=false}
