@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "pattern": "МастерЧеб|MasterCheb",
+      "replacement": "Мастер Чеб"
+    },
+    {
+      "pattern": "On-Prem",
+      "replacement": "на вашем оборудовании"
+    },
+    {
+      "pattern": "CRM",
+      "replacement": "си эр эм"
+    },
+    {
+      "pattern": "ИИ",
+      "replacement": "искусственный интеллект"
+    },
+    {
+      "pattern": "RAG",
+      "replacement": "база знаний"
+    }
+  ]
+}

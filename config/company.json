@@ -1,0 +1,26 @@
+{
+  "id": "mastercheb",
+  "name": "МастерЧеб",
+  "founder": "Мастеров Александр Владимирович",
+  "site": "https://mastercheb.ru",
+  "phone": "+79176693889",
+  "telegram": "https://t.me/mastercheb",
+  "email": "pochtaeto@gmail.com",
+  "inn": "212804880865",
+  "ogrnip": "326210000054250",
+  "subscription_rub_month": 50000,
+  "on_prem_rub": 250000,
+  "implementation_weeks": [
+    1,
+    3
+  ],
+  "demo_days": [
+    1,
+    3
+  ],
+  "languages": [
+    "ru",
+    "en",
+    "zh"
+  ]
+}
