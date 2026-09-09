@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import secrets
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,8 +14,14 @@ class SessionStore:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, updated TEXT NOT NULL, data TEXT NOT NULL)")
 
+    @contextmanager
     def connection(self):
-        return sqlite3.connect(self.path, timeout=10)
+        db = sqlite3.connect(self.path, timeout=10)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def create(self, language: str, consent_version: str) -> dict:
         session = {"id": secrets.token_urlsafe(32), "language": language, "messages": [], "lead": {},

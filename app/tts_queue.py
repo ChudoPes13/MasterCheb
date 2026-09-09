@@ -199,10 +199,10 @@ class TtsDeliveryQueue:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.warning("TTS chunk failed for %s (%s/%s): %s", session_id, item.index, item.total, exc)
+                log.warning("TTS chunk failed (%s/%s): %s", item.index, item.total, type(exc).__name__)
                 if item.generation == state.generation:
                     with suppress(Exception):
-                        await item.socket.send_json({"event": "tts_error", "message": str(exc)})
+                        await item.socket.send_json({"event": "tts_error", "code": "synthesis"})
             finally:
                 state.queue.task_done()
 

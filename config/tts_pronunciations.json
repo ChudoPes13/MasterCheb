@@ -5,6 +5,10 @@
       "replacement": "Мастер Чеб"
     },
     {
+      "pattern": "\\bМастеров(?=[ауеы]?\\b|ым\\b)",
+      "replacement": "М+астеров"
+    },
+    {
       "pattern": "\\bOn[ -]Prem\\b",
       "replacement": "на вашем оборудовании"
     },

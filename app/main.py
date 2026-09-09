@@ -20,12 +20,17 @@ from .session_store import SessionStore
 from .stt import WhisperStt
 from .tts import SileroTts
 from .tts_queue import TtsDeliveryQueue
+from .llm import LlmClient
+from .turn_queue import TurnQueue, QueueFull
 from .vad import VadSegmenter, VadSettings
 
 log = logging.getLogger("mastercheb")
 store = SessionStore(settings.data_dir)
 rag = RagKnowledgeBase(settings.rag_dir)
-dialog = DialogManager(rag, store)
+llm = LlmClient() if settings.llm_enabled else None
+dialog = DialogManager(rag, store, llm)
+turns = TurnQueue(capacity=3, max_waiting=24)
+recognition_lock = asyncio.Lock()
 stt = WhisperStt(settings)
 tts = SileroTts(settings)
 delivery = TtsDeliveryQueue(tts)
@@ -33,7 +38,7 @@ ready = {'text': True, 'voice': False}
 active: set[str] = set()
 rates: dict[str, deque] = defaultdict(deque)
 origins = os.getenv('ALLOWED_ORIGINS', 'https://mastercheb.ru,https://www.mastercheb.ru,http://localhost:5174,http://127.0.0.1:5174').split(',')
-MAX_CONNECTIONS = int(os.getenv('MAX_CONNECTIONS', '8'))
+MAX_CONNECTIONS = max(32, int(os.getenv('MAX_CONNECTIONS', '32')))
 CONSENT_VERSION = '2026-09-05'
 
 def rate_limit(key, count=30, window=60):
@@ -86,7 +91,8 @@ def admin(authorization: str = Header(default='')):
 
 @app.get('/health')
 async def health():
-    return {'status':'ok', 'text':ready['text'], 'voice':ready['voice'], 'capacity_available': len(active) < MAX_CONNECTIONS}
+    return {'status':'ok', 'text':ready['text'], 'voice':ready['voice'], 'capacity_available': len(active) < MAX_CONNECTIONS,
+            'llm': await llm.health() if llm else False, 'simultaneous_turns': turns.capacity, 'queued_turns': len(turns.waiting)}
 
 @app.get('/company')
 async def company():
@@ -135,6 +141,7 @@ async def websocket(ws: WebSocket):
     task = None
     epoch = 0
     use_voice = False
+    protocol = 1
     segmenter = None
     audio_bytes = 0
     last_text = 0.0
@@ -156,25 +163,54 @@ async def websocket(ws: WebSocket):
         if use_voice and s['language']=='ru' and ready['voice']:
             await delivery.enqueue(sid, ws, response['text'])
 
+    async def notify(payload):
+        if protocol >= 2:
+            await ws.send_json(payload)
+
+    async def run_turn(work):
+        try:
+            async with turns.slot(sid, notify) as turn:
+                async with asyncio.timeout(60):
+                    await work()
+                    await delivery.wait_idle(sid)
+                if protocol >= 2:
+                    await ws.send_json({'event': 'audio_delivery_complete', 'turn_id': turn.token})
+                    if use_voice:
+                        # Browser acknowledges after the last chunk has actually ended.
+                        # A missing/hostile client cannot hold a slot indefinitely.
+                        with suppress(asyncio.TimeoutError):
+                            await asyncio.wait_for(turn.playback_done.wait(), 90)
+                    await notify({'event': 'turn_status', 'state': 'idle', 'turn_id': turn.token})
+        except asyncio.CancelledError:
+            raise
+        except (QueueFull, asyncio.TimeoutError):
+            await delivery.cancel_session(sid)
+            await ws.send_json({'event': 'error', 'code': 'queue_timeout'})
+        except Exception:
+            log.warning('Dialogue turn failed', exc_info=False)
+            with suppress(Exception):
+                await ws.send_json({'event': 'error', 'code': 'processing'})
+
     async def respond(text, action=None):
         nonlocal task
         await cancel()
         async def run():
-            try:
-                await emit(await dialog.process(s, text, action))
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception('Dialogue failed')
-                with suppress(Exception):
-                    await ws.send_json({'event':'error','code':'processing'})
-        task = asyncio.create_task(run())
+            await emit(await dialog.process(s, text, action))
+        task = asyncio.create_task(run_turn(run))
 
     async def recognize(pcm, current_epoch):
         if not pcm:
             await ws.send_json({'event':'stt_final', 'text':''})
             return
-        text = await asyncio.to_thread(stt.transcribe_pcm16, pcm, s['language'])
+        async with recognition_lock:
+            recognition = asyncio.create_task(asyncio.to_thread(stt.transcribe_pcm16, pcm, s['language']))
+            try:
+                text = await asyncio.shield(recognition)
+            except asyncio.CancelledError:
+                # A CUDA inference thread cannot be cancelled safely.
+                with suppress(Exception):
+                    await recognition
+                raise
         if current_epoch != epoch:
             return
         await ws.send_json({'event':'stt_final','text':text})
@@ -187,6 +223,8 @@ async def websocket(ws: WebSocket):
             await ws.close(code=1008)
             return
         language = hello.get('language','ru')
+        protocol = 2 if hello.get('protocol') == 2 else 1
+        use_voice = hello.get('voice_response') is True
         if language not in TEXT:
             await ws.close(code=1008)
             return
@@ -204,7 +242,9 @@ async def websocket(ws: WebSocket):
         owns_session = True
         await ws.send_json({'event':'session_started','session_id':sid,'history':s['messages'],'lead':s['lead'],'stage':s['stage'],'submitted':s['submitted']})
         if not s['messages']:
-            await emit(dialog.start(s))
+            async def greet():
+                await emit(dialog.start(s))
+            task = asyncio.create_task(run_turn(greet))
         while True:
             message = await asyncio.wait_for(ws.receive(), timeout=180)
             if message['type']=='websocket.disconnect':
@@ -229,7 +269,8 @@ async def websocket(ws: WebSocket):
                 if speech:
                     audio_bytes = 0
                     await cancel()
-                    task = asyncio.create_task(recognize(speech, epoch))
+                    current_epoch = epoch
+                    task = asyncio.create_task(run_turn(lambda pcm=speech, version=current_epoch: recognize(pcm, version)))
                 continue
             raw = message.get('text','')
             if len(raw)>16000:
@@ -246,10 +287,15 @@ async def websocket(ws: WebSocket):
             event = p.get('event')
             if event=='ping':
                 await ws.send_json({'event':'pong'})
+            elif event=='playback_done':
+                turns.acknowledge(sid, p.get('turn_id'))
             elif event=='voice_response_preference':
                 use_voice = p.get('enabled') is True
                 if not use_voice:
                     await delivery.cancel_session(sid)
+                    for turn in tuple(turns.active):
+                        if turn.session_id == sid:
+                            turn.playback_done.set()
             elif event=='barge_in':
                 await cancel()
             elif event=='finish_voice':
@@ -258,7 +304,8 @@ async def websocket(ws: WebSocket):
                 audio_bytes = 0
                 if pcm:
                     await cancel()
-                    task = asyncio.create_task(recognize(pcm,epoch))
+                    current_epoch = epoch
+                    task = asyncio.create_task(run_turn(lambda audio=pcm, version=current_epoch: recognize(audio,version)))
                 elif task is None or task.done():
                     await ws.send_json({'event':'stt_final', 'text':''})
                 # Server endpointing may already have started recognition.

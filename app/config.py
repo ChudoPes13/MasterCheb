@@ -74,8 +74,9 @@ class Settings:
     whisper_beam_size: int = _int("WHISPER_BEAM_SIZE", 1)
 
     llama_base_url: str = os.getenv("LLAMA_BASE_URL", "http://127.0.0.1:8080/v1")
-    llama_model: str = os.getenv("LLAMA_MODEL", "Ministral-3-3B-Instruct-2512-Q5_K_M.gguf")
-    llama_timeout_sec: float = _float("LLAMA_TIMEOUT_SEC", 8.0)
+    llama_model: str = os.getenv("LLAMA_MODEL", "mastercheb-ministral")
+    llama_timeout_sec: float = _float("LLAMA_TIMEOUT_SEC", 20.0)
+    llm_enabled: bool = _bool("LLM_ENABLED", True)
 
     silero_tts_path: Path = _path(os.getenv("SILERO_TTS_PATH"), "v5_5_ru.pt")
     silero_tts_device: str = os.getenv("SILERO_TTS_DEVICE", "cuda")

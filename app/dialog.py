@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 FIELDS = ('name', 'company', 'industry', 'task', 'contact', 'time')
 TEXT = {
  'ru': {
-  'greeting': 'Здравствуйте, я Маша — ИИ-консультант МастерЧеб. Расскажу, как такой помощник может отвечать вашим клиентам и собирать заявки. Что вы хотели бы узнать?',
+  'greeting': 'Здравствуйте, я Маша — ИИ-консультант МастерЧеб. Со мной можно сразу проверить, как помощник общается с клиентами. Какую задачу вы хотели бы мне поручить?',
   'name': 'Как к вам обращаться?', 'company': 'Как называется ваша компания?',
   'industry': 'В какой сфере вы работаете?', 'task': 'Какую задачу вы хотите поручить ИИ-помощнику?',
   'contact': 'Оставьте телефон, email или Telegram для связи с Александром.',
@@ -57,12 +57,80 @@ class DialogManager:
 
     def response(self, s, text):
         text = short(text)
+        s['lead_offered'] = bool(re.search(r'хотите оставить заявку|помочь оставить заявку|would you like to (?:leave|request)|需要提交.*申请吗', text, re.I))
         s['messages'].append({'role': 'assistant', 'text': text, 'ts': datetime.now(timezone.utc).isoformat()})
         self.store.save(s)
         return {'event': 'assistant_response', 'text': text, 'lead': s['lead'], 'stage': s['stage'], 'submitted': s['submitted']}
 
     def start(self, s):
+        s['asked'] = ['task']
         return self.response(s, TEXT[s['language']]['greeting'])
+
+    async def planned_response(self, s, text):
+        plan = await self.llm.plan(s, text, self.rag.chunks)
+        if plan is None:
+            return None
+        t = TEXT[s['language']]
+        normalized = text.casefold().strip(' ?？!！.。')
+        exact = next((c for c in self.rag.chunks if normalized in [q.casefold() for q in c['queries']]), None)
+        if exact:
+            plan.update(kind='answer', topics=[exact['id']])
+        # Cancelling intake is an application action, not an unrestricted model tool.
+        if plan['kind'] == 'cancel' and not re.search(r'не хочу|не надо|не буду|не нужно|не готов|отмен|стоп|прекрат|хватит|закончи|позже|пока|stop|cancel|not now|no thanks|don.t want|rather not|later|取消|停止|不要|不想|以后', text, re.I):
+            plan['kind'] = 'answer'
+            found = self.rag.search(text)
+            plan['topics'] = [found[0]['id']] if found else []
+            plan['answer'] = ''
+        if plan['kind'] == 'cancel':
+            s.update(stage=None, declined=True)
+            return self.response(s, t['cancel'])
+        if plan['kind'] == 'field':
+            key, value = s['stage'], plan['value'].strip()
+            if key in FIELDS and value and value in text and valid_field(key, value):
+                s['lead'][key] = value
+                s['stage'] = next((k for k in FIELDS if not s['lead'].get(k)), 'confirm')
+                return self.response(s, t[s['stage']])
+            return self.response(s, t['invalid'] + (' ' + t[key] if key in FIELDS else ''))
+        if plan['kind'] == 'lead':
+            s.update(declined=False, stage=next((k for k in FIELDS if not s['lead'].get(k)), 'confirm'))
+            return self.response(s, t[s['stage']])
+        topic_ids = [exact['id']] if exact else plan['topics']
+        selected = [next(c for c in self.rag.chunks if c['id'] == id) for id in topic_ids]
+        s['last_topic'] = selected[0]['id'] if len(selected) == 1 else None
+        # Model selects meaning; commercial claims remain owner-approved verbatim.
+        if selected:
+            answers = [re.split(r'(?<=[。!?！？])\s*|(?<=\.)\s+', c['answers'][s['language']]) for c in selected]
+            sentences = [part for parts in answers for part in parts if not re.search(r'[?？]', part)]
+            if len(selected) > 1:
+                sentences = [parts[0] for parts in answers]
+            answer = ' '.join(sentences[:3])
+        else:
+            answer = plan['answer'].strip()
+            # Free wording is limited to small talk/clarification; reject unsafe formatting/claims.
+            wrong_language = (s['language'] == 'zh' and not re.search(r'[\u4e00-\u9fff]', answer)) or (s['language'] == 'en' and bool(re.search(r'[а-яА-Я]', answer)))
+            if wrong_language or not answer or re.search(r'\d|https?://|@|[?？]|```|гарантируем|гарантирую|скидк|отправил|записал|позвоню|guaranteed|discount', answer, re.I):
+                answer = {'ru': 'Эти детали нужно уточнить с Александром.', 'en': 'Alexander can clarify these details.', 'zh': '这些细节需要向亚历山大确认。'}[s['language']]
+        followups = {
+            'ru': {'example': 'Какой вопрос ваши клиенты задают чаще всего?', 'task': t['task'], 'channel': 'Где клиенты чаще обращаются к вам: на сайте, по телефону или в мессенджере?', 'invite': 'Хотите оставить заявку на бесплатную консультацию?'},
+            'en': {'example': 'What question do your customers ask most often?', 'task': t['task'], 'channel': 'Where do customers usually contact you: your website, phone or a messenger?', 'invite': 'Would you like to leave a request for a free consultation?'},
+            'zh': {'example': '您的客户最常问什么问题？', 'task': t['task'], 'channel': '客户通常通过网站、电话还是即时通讯联系您？', 'invite': '需要提交免费咨询申请吗？'}}
+        asked = s.setdefault('asked', [])
+        next_step = plan['next']
+        if next_step == 'invite' and not any(step in asked for step in ('example', 'channel')):
+            next_step = 'example'
+        if s['stage']:
+            question = t[s['stage']]
+        elif next_step in asked or (next_step == 'invite' and s.get('declined')):
+            question = ''
+        else:
+            question = followups[s['language']].get(next_step, '')
+        # Keep all commercial qualifications; only add a question if it fits.
+        if len([part for part in re.split(r'(?<=[。!?！？])\s*|(?<=\.)\s+', answer.strip()) if part.strip()]) >= 3:
+            question = ''
+        if question and not s['stage'] and next_step not in asked:
+            asked.append(next_step)
+        s['lead_offered'] = next_step == 'invite' and bool(question)
+        return self.response(s, answer + (' ' + question if question else ''))
 
     async def process(self, s, text, action=None):
         t = TEXT[s['language']]
@@ -76,10 +144,15 @@ class DialogManager:
             return self.response(s, t[s['stage']])
         s['messages'].append({'role': 'user', 'text': text, 'ts': datetime.now(timezone.utc).isoformat()})
         lower = text.lower().strip()
+        if re.fullmatch(r'(?:привет|здравствуйте|добрый день|hello|hi|你好|您好)(?:[,!！.。 ]*(?:как (?:дела|настроение)|how are you|你好吗))?[?？!！.。 ]*', lower):
+            greeting = {'ru': 'Здравствуйте! Я готова помочь.', 'en': 'Hello! I’m ready to help.', 'zh': '您好！我可以帮助您。'}[s['language']]
+            question = t[s['stage']] if s['stage'] else {'ru': 'Что вы хотели бы проверить в работе помощника?', 'en': 'What would you like to try with the assistant?', 'zh': '您想测试助手的哪项功能？'}[s['language']]
+            return self.response(s, greeting + ' ' + question)
         if re.fullmatch(r'(?:спасибо|благодарю|thanks|thank you|谢谢|多谢)[!！.。 ]*', lower):
             return self.response(s, t['thanks'])
         if re.fullmatch(r'(?:отмена|не хочу(?: (?:демо|заявку))?|cancel|stop|取消|停止|不要演示)[!！.。 ]*', lower):
             s['stage'] = None
+            s['declined'] = True
             return self.response(s, t['cancel'])
         edits = {'name':r'имя|name|姓名', 'company':r'компан|company|公司', 'industry':r'сфер|industry|行业',
                  'task':r'задач|task|任务', 'contact':r'контакт|contact|联系', 'time':r'врем|time|时间'}
@@ -90,12 +163,24 @@ class DialogManager:
                     s['submitted'] = False
                     return self.response(s, t[key])
         last_answer = next((m['text'] for m in reversed(s['messages']) if m['role'] == 'assistant'), '')
-        offered = bool(re.search(r'оставить заявку\?|помочь оставить заявку\?|начнём с вашего имени\?|would you like to (?:leave|request)|shall we start with your name|需要(?:提交申请|帮您预约)吗', last_answer, re.I))
+        offered = s.get('lead_offered', False) or bool(re.search(r'оставить заявку\?|помочь оставить заявку\?|начнём с вашего имени\?|would you like to (?:leave|request)|shall we start with your name|需要(?:提交申请|帮您预约)吗', last_answer, re.I))
         affirmative = bool(re.fullmatch(r'(?:да|yes|是)[.!。 ]*', lower))
         explicit_lead = bool(re.fullmatch(r'(?:хочу демо|оставить заявку|записаться|request demo|book consultation|申请演示|预约咨询)[.!。 ]*', lower))
         if not s['stage'] and (explicit_lead or (affirmative and offered)):
             s['stage'] = next((k for k in FIELDS if not s['lead'].get(k)), 'confirm')
             return self.response(s, t[s['stage']])
+        field_question = bool(re.search(r'[?？]', text) or re.match(r'(?i)^(а |как\b|сколько\b|что\b|какие\b|можно\b|how\b|what\b|can\b|do\b|多少|可以|怎么)', text.strip()))
+        # Literal form values do not require probabilistic intent classification.
+        # Questions/known FAQ topics still go through the dialogue route.
+        exact_faq = any(text.casefold().strip(' .!！。') in [q.casefold() for q in c['queries']] for c in self.rag.chunks)
+        if s['stage'] in FIELDS and not field_question and not exact_faq and valid_field(s['stage'], text):
+            s['lead'][s['stage']] = text.strip()
+            s['stage'] = next((k for k in FIELDS if not s['lead'].get(k)), 'confirm')
+            return self.response(s, t[s['stage']])
+        if self.llm:
+            planned = await self.planned_response(s, text)
+            if planned is not None:
+                return planned
         # Split explicit clauses; never combine unrelated runner-up search results.
         parts = [p.strip() for p in re.split(r'[?？;；]+|\s+(?:и|and)\s+(?=како|какие|сколько|что|how|what)|[，,]\s*', text, flags=re.I) if p.strip()]
         parts = [p for p in parts if not re.match(r'^(?:не хочу|не нужна?|no demo|不要演示)', p, re.I)]

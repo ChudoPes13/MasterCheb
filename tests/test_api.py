@@ -2,6 +2,7 @@ import os
 import tempfile
 os.environ['WARMUP_ON_STARTUP']='false'
 os.environ['TTS_ENABLED']='false'
+os.environ['LLM_ENABLED']='false'
 os.environ['DATA_DIR']=tempfile.mkdtemp(prefix='mastercheb-api-test-')
 os.environ['ADMIN_TOKEN']='test-only-token-with-at-least-32-characters'
 from fastapi.testclient import TestClient
@@ -96,3 +97,29 @@ def test_finish_voice_keeps_already_running_recognition(client, monkeypatch):
    assert '50 000' in ws.receive_json()['text']
  finally:
   release.set()
+
+
+def test_three_turns_hold_until_playback_then_fifo(client):
+ from contextlib import ExitStack
+ import app.main as backend
+ with ExitStack() as stack:
+  sockets=[stack.enter_context(client.websocket_connect('/ws',headers=HEADERS)) for _ in range(4)]
+  tokens=[]
+  for ws in sockets[:3]:
+   ws.send_json({**HELLO,'protocol':2,'voice_response':True})
+   assert ws.receive_json()['event']=='session_started'
+   event=ws.receive_json();assert event['state']=='processing';tokens.append(event['turn_id'])
+   assert ws.receive_json()['event']=='assistant_response'
+   assert ws.receive_json()['event']=='audio_delivery_complete'
+  sockets[3].send_json({**HELLO,'protocol':2,'voice_response':True})
+  assert sockets[3].receive_json()['event']=='session_started'
+  assert sockets[3].receive_json()['position']==1
+  assert len(backend.turns.active)==3
+  sockets[1].send_json({'event':'playback_done','turn_id':tokens[0]})
+  sockets[1].send_json({'event':'ping'});assert sockets[1].receive_json()['event']=='pong'
+  assert len(backend.turns.waiting)==1
+  sockets[0].send_json({'event':'playback_done','turn_id':tokens[0]})
+  assert sockets[0].receive_json()['state']=='idle'
+  assert sockets[3].receive_json()['state']=='processing'
+  assert sockets[3].receive_json()['event']=='assistant_response'
+ assert not backend.turns.active and not backend.turns.waiting

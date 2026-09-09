@@ -1,5 +1,13 @@
 # Запуск, тестирование и публикация
 
+## Обновление: локальная LLM и очередь
+
+`scripts/start-backend.ps1` теперь запускает `start-llm.ps1`, если порт 8080 свободен, ожидает alias `mastercheb-ministral`, затем открывает backend в текущей видимой консоли. LLM остаётся отдельным процессом при остановке backend. Параметры и причины выбора — в [LOCAL_LLM_PRODUCTION.md](LOCAL_LLM_PRODUCTION.md). Проверяй `llm`, `voice` и `simultaneous_turns` в `/health`; зелёный HTTP сам по себе не означает готовый голос.
+
+Последний прогон: **90 тестов**. Синтетическая нагрузка: `python -m scripts.verify_turn_capacity --with-stt` (нужны работающий backend и публичный fixture `output/pronunciation-audit/dialog-name.wav`; скрипт удаляет только созданные им сессии). Для проверки качества модели: `python -m scripts.evaluate_local_dialog` — отдельная временная база, без чтения клиентов.
+
+9 сентября опубликованы ресурсы `index-DkNW70mC.js` / `index-BTvmNDSI.css`. Для безопасной ручной публикации можно сначала загрузить новые JS/CSS в assets и проверить 200, затем заменить index.html. Старые ресурсы не удалять во время открытых диалогов. После публикации проверять свежую страницу: старая вкладка может держать HTML в кеше.
+
 ## Backend с видимой консолью
 
 Ярлык: `C:\Users\Master\Desktop\МастерЧеб — запуск backend.lnk`.
