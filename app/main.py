@@ -256,8 +256,13 @@ async def websocket(ws: WebSocket):
                 pcm = segmenter.flush() if segmenter else b''
                 segmenter = None
                 audio_bytes = 0
-                await cancel()
-                task = asyncio.create_task(recognize(pcm,epoch))
+                if pcm:
+                    await cancel()
+                    task = asyncio.create_task(recognize(pcm,epoch))
+                elif task is None or task.done():
+                    await ws.send_json({'event':'stt_final', 'text':''})
+                # Server endpointing may already have started recognition.
+                # An empty browser flush must not cancel that utterance.
             elif event in ('user_text','lead','submit'):
                 text = p.get('text','')
                 if not isinstance(text,str) or len(text)>2000 or (event=='user_text' and not text.strip()):

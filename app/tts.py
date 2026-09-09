@@ -17,7 +17,7 @@ class SileroTts:
         self.settings = settings
         self._model = None
         self._load_lock = Lock()
-        self._preprocessor = RussianTextPreprocessor()
+        self._preprocessor = RussianTextPreprocessor(settings.tts_pronunciations_path)
 
     @property
     def loaded(self) -> bool:

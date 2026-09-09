@@ -5,9 +5,14 @@ import re
 from collections import Counter
 from pathlib import Path
 
+STOP_WORDS = set('is the a an of are you your does do it i can what who how to and in on for мне вы у в на и а что как сколько ли это о с'.split())
+SPELLING = {'скока': 'сколько', 'скоко': 'сколько', 'стоет': 'стоит', 'подержка': 'поддержка', 'mutch': 'much'}
+
 def tokens(text: str):
     text = text.lower().replace("ё", "е")
     words = re.findall(r"[a-zа-я0-9]+", text)
+    words = [SPELLING.get(w, w) for w in words]
+    words = [w for w in words if w not in STOP_WORDS]
     words = [w[:6] if re.search('[а-я]', w) and len(w) > 6 else w for w in words]
     for phrase in re.findall(r"[\u4e00-\u9fff]+", text):
         words.extend(phrase[i:i+2] for i in range(max(1, len(phrase)-1)))

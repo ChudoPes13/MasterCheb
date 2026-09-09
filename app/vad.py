@@ -86,7 +86,7 @@ class VadSegmenter:
                 self._last_voice_at = now
                 self._buffer.extend(self._pre_roll)
                 self._pre_roll.clear()
-                self._buffer.extend(chunk)
+                # The current chunk is already part of pre-roll.
             return None
 
         self._buffer.extend(chunk)

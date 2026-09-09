@@ -5,20 +5,28 @@
       "replacement": "Мастер Чеб"
     },
     {
-      "pattern": "On-Prem",
+      "pattern": "\\bOn[ -]Prem\\b",
       "replacement": "на вашем оборудовании"
     },
     {
-      "pattern": "CRM",
+      "pattern": "\\bCRM\\b",
       "replacement": "си эр эм"
     },
     {
-      "pattern": "ИИ",
+      "pattern": "\\bRAG\\b",
+      "replacement": "база знаний"
+    },
+    {
+      "pattern": "\\bИИ\\b",
       "replacement": "искусственный интеллект"
     },
     {
-      "pattern": "RAG",
-      "replacement": "база знаний"
+      "pattern": "\\bTelegram\\b",
+      "replacement": "Телеграм"
+    },
+    {
+      "pattern": "\\bemail\\b",
+      "replacement": "электронную почту"
     }
   ]
 }

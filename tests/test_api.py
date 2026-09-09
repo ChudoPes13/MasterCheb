@@ -61,3 +61,38 @@ def test_duplicate_cannot_remove_original_session(client):
    with pytest.raises(WebSocketDisconnect):b.receive_json()
   assert sid in active
   a.send_json({'event':'ping'});assert a.receive_json()['event']=='pong'
+
+
+def test_finish_voice_keeps_already_running_recognition(client, monkeypatch):
+ import threading
+ import app.main as backend
+ entered, release = threading.Event(), threading.Event()
+ class Segments:
+  def __init__(self, *args): pass
+  def accept_pcm16(self, pcm): return pcm
+  def flush(self): return None
+ def transcribe(pcm, language):
+  entered.set()
+  assert release.wait(5)
+  return 'Сколько стоит?'
+ monkeypatch.setattr(backend, 'VadSegmenter', Segments)
+ monkeypatch.setitem(backend.ready, 'voice', True)
+ monkeypatch.setattr(backend.stt, 'transcribe_pcm16', transcribe)
+ try:
+  with client.websocket_connect('/ws', headers=HEADERS) as ws:
+   ws.send_json(HELLO); ws.receive_json(); ws.receive_json()
+   ws.send_bytes(b'\x01\x00' * 4000)
+   assert entered.wait(3)
+   ws.send_json({'event':'finish_voice'})
+   ws.send_json({'event':'ping'})
+   events=[]
+   while True:
+    event=ws.receive_json()
+    if event['event']=='pong': break
+    events.append(event)
+   release.set()
+   assert not any(e.get('text')=='' for e in events)
+   assert ws.receive_json()['text']=='Сколько стоит?'
+   assert '50 000' in ws.receive_json()['text']
+ finally:
+  release.set()

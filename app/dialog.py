@@ -14,6 +14,7 @@ TEXT = {
   'fallback': 'Для точного ответа нужно уточнить вашу задачу с Александром. Он бесплатно разберёт процесс и предложит вариант внедрения. Хотите оставить заявку?',
   'invalid': 'Пожалуйста, укажите корректные данные для этого поля.',
   'cancel': 'Сбор заявки остановлен, её можно заполнить позже. Чем ещё помочь?',
+  'thanks': 'Пожалуйста. Если появятся вопросы, я здесь.',
  },
  'en': {
   'greeting': "Hello, I'm Masha, MasterCheb's AI consultant. I can explain how an assistant can answer your customers and collect enquiries. What would you like to know?",
@@ -24,6 +25,7 @@ TEXT = {
   'done': 'Your request has been saved for Alexander to follow up personally at your preferred time if available. The appointment time is not confirmed yet. What else would you like to know?',
   'fallback': 'Alexander can clarify your specific needs in a free consultation and suggest an implementation. Would you like to leave a request?',
   'invalid': 'Please enter valid information for this field.', 'cancel': 'Request collection is paused; you can return to it later. How else can I help?',
+  'thanks': 'You’re welcome. I’m here if you need anything else.',
  },
  'zh': {
   'greeting': '您好，我是 MasterCheb 的人工智能顾问玛莎。我可以介绍智能助手如何回答客户问题并收集咨询申请。您想了解什么？',
@@ -34,6 +36,7 @@ TEXT = {
   'done': '申请已为亚历山大保存，他会尽量按您希望的时间亲自联系。会面时间尚未最终确认。您还想了解什么？',
   'fallback': '亚历山大可以通过免费咨询明确您的具体需求并提出实施方案。需要提交申请吗？',
   'invalid': '请输入该字段的有效信息。', 'cancel': '已暂停收集申请，您可以稍后继续。还可以帮您什么？',
+  'thanks': '不客气。有其他问题时可以继续问我。',
  }
 }
 def short(text):
@@ -73,24 +76,48 @@ class DialogManager:
             return self.response(s, t[s['stage']])
         s['messages'].append({'role': 'user', 'text': text, 'ts': datetime.now(timezone.utc).isoformat()})
         lower = text.lower().strip()
-        if re.search(r'^(отмена|не хочу|cancel|stop|取消|停止)$', lower):
+        if re.fullmatch(r'(?:спасибо|благодарю|thanks|thank you|谢谢|多谢)[!！.。 ]*', lower):
+            return self.response(s, t['thanks'])
+        if re.fullmatch(r'(?:отмена|не хочу(?: (?:демо|заявку))?|cancel|stop|取消|停止|不要演示)[!！.。 ]*', lower):
             s['stage'] = None
             return self.response(s, t['cancel'])
         edits = {'name':r'имя|name|姓名', 'company':r'компан|company|公司', 'industry':r'сфер|industry|行业',
                  'task':r'задач|task|任务', 'contact':r'контакт|contact|联系', 'time':r'врем|time|时间'}
-        if re.search(r'измен|исправ|change|edit|修改', lower):
+        if re.fullmatch(r'(?:изменить|исправить|change|edit|修改)\s*(?:имя|компанию|сферу|задачу|контакт|время|name|company|industry|task|contact|time|姓名|公司|行业|任务|联系|时间)[.!。 ]*', lower):
             for key, pattern in edits.items():
                 if re.search(pattern, lower):
                     s['stage'] = key
                     s['submitted'] = False
                     return self.response(s, t[key])
-        if not s['stage'] and re.search(r'^(да|yes|是|хочу демо|оставить заявку|записаться|request demo|book consultation|申请演示|预约咨询)[.! ]*$', lower):
+        last_answer = next((m['text'] for m in reversed(s['messages']) if m['role'] == 'assistant'), '')
+        offered = bool(re.search(r'оставить заявку\?|помочь оставить заявку\?|начнём с вашего имени\?|would you like to (?:leave|request)|shall we start with your name|需要(?:提交申请|帮您预约)吗', last_answer, re.I))
+        affirmative = bool(re.fullmatch(r'(?:да|yes|是)[.!。 ]*', lower))
+        explicit_lead = bool(re.fullmatch(r'(?:хочу демо|оставить заявку|записаться|request demo|book consultation|申请演示|预约咨询)[.!。 ]*', lower))
+        if not s['stage'] and (explicit_lead or (affirmative and offered)):
             s['stage'] = next((k for k in FIELDS if not s['lead'].get(k)), 'confirm')
             return self.response(s, t[s['stage']])
-        matches = self.rag.search(text)
-        is_question = '?' in text or '？' in text or bool(re.match(r'^(сколько|как |что |а |можно|кто |зачем|почему|какие|how |what |who |can |why |多少|如何|什么|能否)', lower))
+        # Split explicit clauses; never combine unrelated runner-up search results.
+        parts = [p.strip() for p in re.split(r'[?？;；]+|\s+(?:и|and)\s+(?=како|какие|сколько|что|how|what)|[，,]\s*', text, flags=re.I) if p.strip()]
+        parts = [p for p in parts if not re.match(r'^(?:не хочу|не нужна?|no demo|不要演示)', p, re.I)]
+        lookup = ' '.join(parts) or text
+        support_followup = re.fullmatch(r'(?:(?:а )?(?:что )?после (?:двух|2) месяцев|what (?:happens )?after (?:two|2) months|两个月(?:之后|以后)呢)[?？!.。 ]*', lower)
+        if support_followup and s.get('last_topic') in ('onprem', 'support'):
+            lookup = 'поддержка'
+        matches = self.rag.search(lookup)
+        is_question = '?' in text or '？' in text or bool(re.match(r'^(сколько|как\b|что\b|а |можно|кто\b|зачем|почему|како|какие|how\b|what\b|who\b|can\b|why\b|is\b|does\b|多少|如何|什么|能否)', lower))
         if matches and (not s['stage'] or is_question):
+            selected = []
+            for part in parts:
+                found = self.rag.search(part)
+                if found and found[0]['id'] not in [c['id'] for c in selected]:
+                    selected.append(found[0])
+            if len(selected) > 1:
+                s['last_topic'] = None
+                return self.response(s, ' '.join(re.split(r'(?<=[。!?！？])\s*|(?<=\.)\s+', c['answers'][s['language']])[0] for c in selected[:3]))
+            s['last_topic'] = matches[0]['id']
             return self.response(s, matches[0]['answers'][s['language']])
+        if is_question and s['stage']:
+            return self.response(s, t['fallback'].split('. ')[0] + '. ' + t[s['stage']])
         if s['stage'] in FIELDS:
             key = s['stage']
             if not valid_field(key, text):
